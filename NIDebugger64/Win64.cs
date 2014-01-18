@@ -53,22 +53,22 @@ namespace NonIntrusive64
         public static extern IntPtr OpenThread(int dwDesiredAccess, bool bInheritHandle, uint dwThreadId);
         #endregion
         #region Structs/Enums
+        [StructLayout(LayoutKind.Sequential)]
         public struct MODULEENTRY32
         {
-            const int MAX_PATH = 260;
+            
             public UInt32 dwSize;
             public UInt32 th32ModuleID;
             public UInt32 th32ProcessID;
-            public IntPtr GlblcntUsage;
+            public UInt32 GlblcntUsage;
             public UInt32 ProccntUsage;
             public IntPtr modBaseAddr;
             public UInt32 modBaseSize;
             public IntPtr hModule;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = MAX_PATH)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
             public string szModule;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = MAX_PATH)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
             public string szExePath;
-            public UInt32 dwFlags;
         }
         [Flags]
         public enum SnapshotFlags : uint

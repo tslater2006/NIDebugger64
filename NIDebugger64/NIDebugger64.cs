@@ -26,8 +26,7 @@ namespace NonIntrusive64
         /// </summary>
         public bool AutoClearBP { get; set; }
 
-
-        public Win64.CONTEXT Context { get; set; }
+        public Win64.CONTEXT Context;
 
         public NIDebugger64 Execute(NIStartupOptions opts)
         {
@@ -143,9 +142,47 @@ namespace NonIntrusive64
         /// <param name="str">The String to be written.</param>
         /// <param name="encode">The encoding that should be used for the String.</param>
         /// <returns></returns>
-        public NIDebugger64 WriteString(uint address, String str, Encoding encode)
+        public NIDebugger64 WriteString(ulong address, String str, Encoding encode)
         {
             return WriteData(address, encode.GetBytes(str));
+        }
+        /// <summary>
+        /// Terminates the debugged process.
+        /// </summary>
+        public void Terminate()
+        {
+            Detach();
+            debuggedProcess.Kill();
+        }
+
+        /// <summary>
+        /// Detaches the debugger from the debugged process.
+        /// This is done by removing all registered BreakPoints and then resuming the debugged process.
+        /// </summary>
+        /// <returns></returns>
+        public NIDebugger64 Detach()
+        {
+            pauseAllThreads();
+            foreach (uint addr in breakpoints.Keys)
+            {
+                ClearBreakpoint(addr);
+            }
+            updateContext(getCurrentThreadId());
+            resumeAllThreads();
+            return this;
+        }
+        /// <summary>
+        /// Allocates memory in the debugged process.
+        /// </summary>
+        /// <param name="size">The number of bytes to allocate.</param>
+        /// <param name="address">The output variable containing the address of the allocated memory.</param>
+        /// <returns></returns>
+        public NIDebugger64 AllocateMemory(uint size, out ulong address)
+        {
+            IntPtr memLocation = Win64.VirtualAllocEx((IntPtr)debuggedProcessInfo.hProcess, new IntPtr(), size, (uint)Win64.StateEnum.MEM_RESERVE | (uint)Win64.StateEnum.MEM_COMMIT, (uint)Win64.AllocationProtectEnum.PAGE_EXECUTE_READWRITE);
+
+            address = (ulong)memLocation;
+            return this;
         }
 
         /// <summary>
@@ -156,7 +193,7 @@ namespace NonIntrusive64
         /// <param name="encode">The encoding that the String uses.</param>
         /// <param name="value">The output variable that will hold the read value.</param>
         /// <returns></returns>
-        public NIDebugger64 ReadString(uint address, int maxLength, Encoding encode, out String value)
+        public NIDebugger64 ReadString(ulong address, int maxLength, Encoding encode, out String value)
         {
             byte[] data;
             ReadData(address, maxLength, out data);
@@ -226,6 +263,98 @@ namespace NonIntrusive64
             value = BitConverter.ToUInt32(data, 0);
             return this;
         }
+        private Win64.MODULEENTRY32 getModule(String modName)
+        {
+            IntPtr hSnap = Win64.CreateToolhelp32Snapshot(Win64.SnapshotFlags.NoHeaps | Win64.SnapshotFlags.Module, (uint)debuggedProcessInfo.dwProcessId);
+            Win64.MODULEENTRY32 module = new Win64.MODULEENTRY32();
+            module.dwSize = (uint)Marshal.SizeOf(module);
+            Win64.Module32First(hSnap, ref module);
+
+            if (module.szModule.Equals(modName, StringComparison.CurrentCultureIgnoreCase))
+            {
+                return module;
+            }
+
+            while (Win64.Module32Next(hSnap, ref module))
+            {
+                if (module.szModule.Equals(modName, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    return module;
+                }
+            }
+            module = new Win64.MODULEENTRY32();
+            Win64.CloseHandle(hSnap);
+            return module;
+        }
+        /// <summary>
+        /// Finds the address for the given method inside the given module. 
+        /// The method requested must be exported to be found. 
+        /// This is equivalent to the GetProcAddress() Win64 API but takes into account ASLR by reading the export tables directly from the loaded modules within the debugged process.
+        /// </summary>
+        /// <param name="modName">Name of the DLL that contains the function (must include extension)</param>
+        /// <param name="method">The method whose address is being requested.</param>
+        /// <returns>The address of the method if it was found</returns>
+        /// <exception cref="System.Exception">Target doesn't have module:  + modName +  loaded.</exception>
+        public ulong FindProcAddress(String modName, String method)
+        {
+            Win64.MODULEENTRY32 module = getModule(modName);
+
+            if (module.dwSize == 0)
+            {
+                Console.WriteLine("Failed to find module");
+                throw new Exception("Target doesn't have module: " + modName + " loaded.");
+            }
+            ulong modBase = (ulong)module.modBaseAddr;
+
+            uint peAddress, exportTableAddress, exportTableSize;
+            byte[] exportTable;
+
+            ReadDWORD(modBase + 0x3c, out peAddress);
+
+            ReadDWORD(modBase + peAddress + 0x88, out exportTableAddress);
+            ReadDWORD(modBase + peAddress + 0x8C, out exportTableSize);
+
+            ReadData(modBase + exportTableAddress, (int)exportTableSize, out exportTable);
+
+            ulong exportEnd = modBase + exportTableAddress + exportTableSize;
+
+
+            uint numberOfFunctions = BitConverter.ToUInt32(exportTable, 0x14);
+            uint numberOfNames = BitConverter.ToUInt32(exportTable, 0x18);
+
+            uint functionAddressBase = BitConverter.ToUInt32(exportTable, 0x1c);
+            uint nameAddressBase = BitConverter.ToUInt32(exportTable, 0x20);
+            uint ordinalAddressBase = BitConverter.ToUInt32(exportTable, 0x24);
+
+            StringBuilder sb = new StringBuilder();
+            for (int x = 0; x < numberOfNames; x++)
+            {
+                sb.Clear();
+                uint namePtr = BitConverter.ToUInt32(exportTable, (int)(nameAddressBase - exportTableAddress) + (x * 4)) - exportTableAddress;
+
+                while (exportTable[namePtr] != 0)
+                {
+                    sb.Append((char)exportTable[namePtr]);
+                    namePtr++;
+                }
+
+                ushort funcOrdinal = BitConverter.ToUInt16(exportTable, (int)(ordinalAddressBase - exportTableAddress) + (x * 2));
+
+
+                ulong funcAddress = BitConverter.ToUInt32(exportTable, (int)(functionAddressBase - exportTableAddress) + (funcOrdinal * 4));
+                funcAddress += modBase;
+
+                if (sb.ToString().Equals(method))
+                {
+                    return funcAddress;
+                }
+
+            }
+            return 0;
+
+
+        }
+
 
         /// <summary>
         /// Signals that the debugged process should be resumed, and that the debugger should continue to monitor for BreakPoint hits.
@@ -317,9 +446,9 @@ namespace NonIntrusive64
             return WriteData(address, data);
         }
 
-        public NIDebugger64 ReadStackValue(uint rspOffset, out uint value)
+        public NIDebugger64 ReadStackValue(uint rspOffset, out ulong value)
         {
-            ReadDWORD(Context.Rsp + rspOffset, out value);
+            ReadQWORD(Context.Rsp + rspOffset, out value);
             return this;
         }
 
@@ -343,6 +472,13 @@ namespace NonIntrusive64
             {
                 return (int)lastBreakpoint.threadId;
             }
+        }
+
+        private void updateContext(int threadId)
+        {
+            IntPtr hThread = getThreadHandle(threadId);
+            Win64.CONTEXT ctx = Context;
+            Win64.SetThreadContext(hThread, ref ctx);
         }
 
         private Win64.CONTEXT getContext(int threadId)
