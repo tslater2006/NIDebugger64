@@ -16,7 +16,7 @@ namespace DebugTest
 
             NIDebugger64 debug = new NIDebugger64();
             debug.AutoClearBP = true;
-
+            debug.StepIntoCalls = true;
             debug.Execute(opts);
             ulong memoryCave;
             debug.AllocateMemory(100, out memoryCave);
@@ -27,6 +27,12 @@ namespace DebugTest
             debug.SetBreakpoint(setWindowTextW);
 
             debug.Continue();
+            debug.SingleStep();
+            debug.SingleStep();
+            debug.SingleStep();
+            
+            uint len = debug.GetInstrLength();
+            byte[] data = debug.GetInstrOpcodes();
 
             debug.Context.Rdx = memoryCave;
 
